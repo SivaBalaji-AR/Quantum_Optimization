@@ -16,6 +16,10 @@ import json
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager  # ✅ This is required
+from fastapi import FastAPI
+from motor.motor_asyncio import AsyncIOMotorClient
+
 
 app = FastAPI()  # ✅ Create app first
 
@@ -35,8 +39,18 @@ load_dotenv(ROOT_DIR / '.env')
 # MongoDB connection
 # mongo_url = os.environ['MONGO_URL']
 # MongoDB connection (async)
+
 client = AsyncIOMotorClient("mongodb://localhost:27017")
 db = client["test_database"]
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic (if needed)
+    yield
+    # Shutdown logic
+    client.close()
+
+app = FastAPI(lifespan=lifespan)
 
 
 # Create the main app without a prefix
@@ -341,7 +355,3 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
