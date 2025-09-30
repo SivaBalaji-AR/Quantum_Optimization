@@ -16,9 +16,8 @@ class NodeCreate(BaseModel):
     lng: float
 
 class RouteRequest(BaseModel):
-    start_node_id: str
-    end_node_id: str
-    algorithm: str  # "dijkstra" or "qaoa"
+    stops: List[str]        # 🚨 changed from start_node_id / end_node_id
+    algorithm: str          # "dijkstra" or "qaoa"
 
 class RouteResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))

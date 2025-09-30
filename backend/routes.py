@@ -38,27 +38,34 @@ async def delete_node(node_id: str):
 @router.post("/route/optimize", response_model=RouteResult)
 async def optimize_route(request: RouteRequest):
     graph = await build_graph_from_nodes()
-    if request.start_node_id not in graph.nodes or request.end_node_id not in graph.nodes:
-        raise HTTPException(status_code=404, detail="Start or end node not found")
+
+    if len(request.stops) < 2:
+        raise HTTPException(status_code=400, detail="At least two stops required")
+
+    # Check that all stops exist
+    for stop in request.stops:
+        if stop not in graph.nodes:
+            raise HTTPException(status_code=404, detail=f"Node {stop} not found")
 
     t0 = time.time()
     algo = request.algorithm.lower()
+
     if algo == "dijkstra":
-        path, distance = optimizer.solve_dijkstra(graph, request.start_node_id, request.end_node_id)
+        path, distance = optimizer.solve_multi_stop(graph, request.stops, "dijkstra")
     elif algo == "qaoa":
-        path, distance = optimizer.solve_qaoa(graph, request.start_node_id, request.end_node_id)
+        path, distance = optimizer.solve_multi_stop(graph, request.stops, "qaoa")
     else:
         raise HTTPException(status_code=400, detail="Invalid algorithm. Use 'dijkstra' or 'qaoa'")
 
     exec_time = time.time() - t0
     if not path:
-        raise HTTPException(status_code=404, detail="No path found between nodes")
+        raise HTTPException(status_code=404, detail="No path found between stops")
 
     db = await get_db()
     result = RouteResult(
         algorithm=request.algorithm,
-        start_node_id=request.start_node_id,
-        end_node_id=request.end_node_id,
+        start_node_id=request.stops[0],
+        end_node_id=request.stops[-1],
         path=path,
         distance=distance,
         execution_time=exec_time,
