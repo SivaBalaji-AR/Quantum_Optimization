@@ -8,14 +8,20 @@ HOW TO RUN THIS
   
     venv\Scripts\activate
   
+    pip install --upgrade pip
+    
     pip install -r requirements.txt
-  
-    python app.py
 
-    uvicorn server:app --reload
+    uvicorn main:app --reload
     
 3.For Frontend, go to the Frontend Folder and in commad line use the cmd
 
     npm install
   
     npm start
+
+4. If something happens in the backend because of qiskit, in the venv use this commands
+
+    pip install qiskit-algorithms qiskit-optimization qiskit-aer
+
+    (venv) PS C:\Users\anand\OneDrive\Documents\GitHub\Quantum_Optimization\backend> pip install qiskit-aer
