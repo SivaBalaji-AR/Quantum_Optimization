@@ -9,6 +9,9 @@ from qiskit_algorithms import QAOA   # ✅ comes from qiskit-algorithms
 from qiskit_algorithms.optimizers import COBYLA
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer
+from qiskit.primitives import Sampler
+
+from qiskit_optimization.applications import Tsp 
 
 
 # instead of algorithm_globals
@@ -31,22 +34,36 @@ def haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 # -------------------------
 # Graph build helpers
 # -------------------------
-async def build_graph_from_nodes() -> nx.Graph:
-    """Load all nodes from DB and construct a weighted complete graph."""
+async def build_graph_from_nodes(node_ids: List[str]) -> nx.Graph:
+    """
+    Load a specific list of nodes from DB and construct a weighted complete graph.
+    """
+    print(f"\n--- Building graph for {len(node_ids)} selected nodes ---")
     db = await get_db()
-    nodes_cursor = db.nodes.find()
-    nodes = await nodes_cursor.to_list(1000)
+    
+    # Query MongoDB to find all documents where the 'id' is in our list
+    query = {"id": {"$in": node_ids}}
+    nodes_cursor = db.nodes.find(query)
+    nodes = await nodes_cursor.to_list(len(node_ids))
+
+    print(f"1. Fetched {len(nodes)} matching nodes from MongoDB.")
 
     G = nx.Graph()
     for node in nodes:
         G.add_node(node['id'], name=node['name'], lat=node['lat'], lng=node['lng'])
 
+    print(f"2. Added {G.number_of_nodes()} nodes to the graph object.")
+
+    # This part remains the same, building a complete graph from the nodes we found
+    print("3. Creating edges...")
     node_list = list(G.nodes(data=True))
     for i, (n1, d1) in enumerate(node_list):
         for j, (n2, d2) in enumerate(node_list):
             if i < j:
                 dist = haversine_km(d1['lat'], d1['lng'], d2['lat'], d2['lng'])
                 G.add_edge(n1, n2, weight=dist)
+
+    print("--- Graph Ready ---\n")
     return G
 
 
@@ -68,111 +85,106 @@ async def graph_visualization() -> Dict[str, List[Dict[str, Any]]]:
 
     return {"nodes": vis_nodes, "edges": vis_edges}
 
-
 # -------------------------
 # Algorithms
 # -------------------------
 class QuantumRouteOptimizer:
-    """Qiskit-based QAOA for shortest path + Dijkstra fallback."""
+    """
+    Solves routing problems using classical and quantum algorithms.
+    Includes Dijkstra for A-to-B paths and QAOA for the Traveling Salesperson Problem (TSP).
+    """
 
-    def solve_qaoa(self, graph: nx.Graph, start: str, end: str, p: int = 1) -> Tuple[List[str], float]:
+    def solve_tsp_qaoa(self, graph: nx.Graph, p: int = 1) -> Tuple[List[str], float]:
         """
-        Solve shortest path using a real QAOA formulation in Qiskit.
-        Note: simplified QUBO (does not enforce strict flow constraints).
+        Solves the Traveling Salesperson Problem (TSP) using QAOA.
+        Finds the optimal tour that visits every node in the graph.
         """
+        # Pre-check: TSP needs at least 2 nodes to be meaningful.
+        if graph.number_of_nodes() < 2:
+            return [], 0.0
+            
         try:
-            # Step 1: Build QUBO
-            qp = QuadraticProgram()
+            # 1. IMPORTANT: Relabel the graph nodes to integers (0, 1, 2...)
+            # The Tsp class requires an integer-labeled graph.
+            # We store the `mapping` to convert the result back later.
+            int_graph = nx.convert_node_labels_to_integers(graph, label_attribute='original_label')
+            
+            # Create an inverse mapping to get original IDs from integer labels
+            inverse_mapping = nx.get_node_attributes(int_graph, 'original_label')
 
-            edges = list(graph.edges(data=True))
-            edge_vars = []
-            for idx, (u, v, data) in enumerate(edges):
-                var_name = f"x_{u}_{v}"
-                qp.binary_var(var_name)
-                edge_vars.append((var_name, u, v, data["weight"]))
+            # 2. Create a TSP instance from the integer-labeled graph
+            tsp = Tsp(int_graph)
+            qp = tsp.to_quadratic_program()
 
-            # Objective: minimize total distance
-            linear = {var: w for var, _, _, w in edge_vars}
-            qp.minimize(linear=linear)
-
-            # Step 2: Run QAOA
-            algorithm_globals.random_seed = 42
-            backend = Aer.get_backend("aer_simulator_statevector")
-
-            qaoa = QAOA(optimizer=COBYLA(maxiter=50), reps=p, quantum_instance=backend)
+            # 3. Set up and run the QAOA solver
+            sampler = Sampler(options={"seed": 42})
+            qaoa = QAOA(sampler=sampler, optimizer=COBYLA(maxiter=100), reps=p)
             optimizer = MinimumEigenOptimizer(qaoa)
-
             result = optimizer.solve(qp)
 
-            # Step 3: Extract chosen edges
-            chosen_edges = [e for e in edge_vars if result.variables_dict.get(e[0], 0) > 0.5]
+            # 4. Interpret the result (path will be a list of integers)
+            path = tsp.interpret(result)
 
-            if not chosen_edges:
-                return [], float("inf")
-
-            # Convert chosen edges into a path (greedy reconstruction)
-            nodes_path = [start]
-            current = start
-            visited = {start}
-
-            while current != end:
-                next_edges = [e for e in chosen_edges if e[1] == current or e[2] == current]
-                if not next_edges:
-                    break
-                _, u, v, w = next_edges[0]
-                nxt = v if u == current else u
-                if nxt in visited:
-                    break
-                nodes_path.append(nxt)
-                visited.add(nxt)
-                current = nxt
-
-            distance = sum(e[3] for e in chosen_edges)
-            return nodes_path, distance
+            adj_matrix = nx.to_numpy_array(int_graph)
+        
+            distance = Tsp.tsp_value(path, adj_matrix)
+            
+            # 5. Use the INVERSE mapping to convert the integer path back to original node IDs
+            path_ids = [inverse_mapping[i] for i in path]
+            
+            # To make it a round trip, add the starting node to the end
+            path_ids.append(path_ids[0])
+            
+            return path_ids, distance
 
         except Exception as e:
-            print("QAOA error:", e)
-            return self.solve_dijkstra(graph, start, end)
+            print(f"QAOA TSP Error: {e}")
+            return [], float("inf")
 
     def solve_dijkstra(self, graph: nx.Graph, start: str, end: str) -> Tuple[List[str], float]:
         """Classical shortest path via Dijkstra."""
         try:
-            path = nx.shortest_path(graph, start, end, weight="weight")
-            dist = nx.shortest_path_length(graph, start, end, weight="weight")
+            path = nx.shortest_path(graph, source=start, target=end, weight="weight")
+            dist = nx.shortest_path_length(graph, source=start, target=end, weight="weight")
             return path, dist
         except nx.NetworkXNoPath:
             return [], float("inf")
 
-    def solve_multi_stop(self, graph: nx.Graph, stops: List[str], algorithm: str = "dijkstra") -> Tuple[List[str], float]:
+    def solve_multi_stop(self, graph: nx.Graph, stops: List[str], algorithm: str) -> Tuple[List[str], float]:
         """
-        Compute route across multiple stops in the given order.
-        e.g. [A, B, C, D] -> shortest path A→B + B→C + C→D.
+        Computes a route across multiple stops.
+        - 'dijkstra': Solves in the given order [A->B, B->C, ...].
+        - 'qaoa-tsp': Solves the TSP to find the optimal order of all nodes in the graph.
         """
-        if len(stops) < 2:
-            return [], 0.0
+        algorithm = algorithm.lower()
 
-        full_path: List[str] = []
-        total_distance: float = 0.0
+        if algorithm == "qaoa":
+            # The 'stops' list is ignored for TSP, as it solves for all nodes in the graph.
+            return self.solve_tsp_qaoa(graph)
 
-        for i in range(len(stops) - 1):
-            s, t = stops[i], stops[i+1]
-            if algorithm == "dijkstra":
+        elif algorithm == "dijkstra":
+            if len(stops) < 2:
+                return [], 0.0
+            
+            full_path: List[str] = []
+            total_distance: float = 0.0
+
+            for i in range(len(stops) - 1):
+                s, t = stops[i], stops[i+1]
                 path, dist = self.solve_dijkstra(graph, s, t)
-            else:
-                path, dist = self.solve_qaoa(graph, s, t)
+                if not path:
+                    return [], float("inf")
+                
+                if full_path:
+                    full_path.extend(path[1:])
+                else:
+                    full_path.extend(path)
+                total_distance += dist
 
-            if not path:
-                return [], float("inf")
-
-            # avoid duplicate nodes at segment junction
-            if full_path:
-                full_path.extend(path[1:])
-            else:
-                full_path.extend(path)
-
-            total_distance += dist
-
-        return full_path, total_distance
+            return full_path, total_distance
+            
+        else:
+            raise ValueError("Invalid algorithm specified.")
 
 
 # Global optimizer instance

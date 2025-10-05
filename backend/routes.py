@@ -37,10 +37,11 @@ async def delete_node(node_id: str):
 # --------- Routing ----------
 @router.post("/route/optimize", response_model=RouteResult)
 async def optimize_route(request: RouteRequest):
-    graph = await build_graph_from_nodes()
+    print(f"Received raw request body: {request.dict()}")
+    graph = await build_graph_from_nodes(node_ids=request.stops)
 
-    if len(request.stops) < 2:
-        raise HTTPException(status_code=400, detail="At least two stops required")
+    if len(graph.nodes) != len(request.stops):
+        raise HTTPException(status_code=404, detail="One or more selected nodes were not found in the database.")
 
     # Check that all stops exist
     for stop in request.stops:
@@ -53,6 +54,10 @@ async def optimize_route(request: RouteRequest):
     if algo == "dijkstra":
         path, distance = optimizer.solve_multi_stop(graph, request.stops, "dijkstra")
     elif algo == "qaoa":
+        if len(request.stops) > 5:
+            raise HTTPException(status_code=400, detail="QAOA TSP is too slow for more than 5 stops.")
+        if len(request.stops) < 3:
+            raise HTTPException(status_code=400, detail="QAOA TSP requires at least 3 stops.")
         path, distance = optimizer.solve_multi_stop(graph, request.stops, "qaoa")
     else:
         raise HTTPException(status_code=400, detail="Invalid algorithm. Use 'dijkstra' or 'qaoa'")
@@ -91,17 +96,17 @@ async def create_sample_nodes():
     await db.nodes.delete_many({})
 
     sample_nodes = [
-        {"name": "Restaurant A", "lat": 40.7128, "lng": -74.0060},  # NYC
-        {"name": "Restaurant B", "lat": 40.7589, "lng": -73.9851},  # Times Sq
-        {"name": "Restaurant C", "lat": 40.6892, "lng": -74.0445},  # Jersey City
-        {"name": "Customer 1",  "lat": 40.7505, "lng": -73.9934},
-        {"name": "Customer 2",  "lat": 40.7282, "lng": -74.0776},   # Hoboken
-        {"name": "Warehouse",   "lat": 40.7831, "lng": -73.9712},   # UWS
-        {"name": "Distribution Center", "lat": 40.6782, "lng": -73.9442}, # Brooklyn
-        {"name": "Restaurant D","lat": 40.7614, "lng": -73.9776},   # Lincoln Ctr
-        {"name": "Customer 3",  "lat": 40.7400, "lng": -73.9897},   # Chelsea
-        {"name": "Customer 4",  "lat": 40.6928, "lng": -73.9903},   # Brooklyn Heights
-    ]
+    {"name": "Gandhipuram Central Bus Stand", "lat": 11.0183, "lng": 76.9685},
+    {"name": "Coimbatore Junction Railway Station", "lat": 10.9945, "lng": 76.9654},
+    {"name": "Annapoorna Restaurant, RS Puram", "lat": 11.0072, "lng": 76.9515},
+    {"name": "Warehouse, SIDCO Industrial Estate", "lat": 10.9580, "lng": 76.9298},
+    {"name": "Distribution Center, Peelamedu", "lat": 11.0305, "lng": 77.0301},
+    {"name": "Customer 1, Saibaba Colony", "lat": 11.0286, "lng": 76.9500},
+    {"name": "Customer 2, Race Course Road", "lat": 11.0008, "lng": 76.9792},
+    {"name": "Textile Mill, Avinashi Road", "lat": 11.0451, "lng": 77.0655},
+    {"name": "BrookeFields Mall", "lat": 11.0084, "lng": 76.9598},
+    {"name": "Tidel Park Coimbatore", "lat": 11.0238, "lng": 77.0294},
+]
 
     created = []
     for data in sample_nodes:
